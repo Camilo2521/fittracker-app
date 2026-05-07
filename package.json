@@ -1,0 +1,80 @@
+{
+  "name": "fittracker",
+  "version": "1.0.0",
+  "description": "FitTracker - Tu compañero personal de fitness",
+  "author": "FitTracker",
+  "private": true,
+  "main": "electron/main.js",
+  "scripts": {
+    "install:all": "cd frontend && npm install && cd ../backend && npm install",
+    "backend:dev": "cd backend && npm run dev",
+    "backend:start": "cd backend && npm start",
+    "frontend:build": "cd frontend && node scripts/build.js",
+    "electron:dev": "electron .",
+    "electron:build": "electron-builder build --win --publish never",
+    "electron:build:all": "electron-builder build --win --mac --linux --publish never",
+    "build:apk": "cd frontend && npm run build:android"
+  },
+  "build": {
+    "appId": "com.extremo.fittracker",
+    "productName": "FitTracker",
+    "copyright": "Copyright © 2025 FitTracker",
+    "directories": {
+      "output": "dist-electron"
+    },
+    "files": [
+      "electron/**/*",
+      "backend/**/*",
+      "frontend/www/**/*",
+      "python_service/**/*",
+      "!**/node_modules/**",
+      "backend/node_modules/**",
+      "!**/*.log",
+      "!**/.git/**"
+    ],
+    "extraResources": [
+      {
+        "from": "backend/node_modules",
+        "to": "backend/node_modules",
+        "filter": ["**/*"]
+      }
+    ],
+    "win": {
+      "target": [
+        { "target": "nsis", "arch": ["x64"] }
+      ],
+      "icon": "frontend/www/icons/icon.ico",
+      "artifactName": "FitTracker-Setup-${version}.${ext}",
+      "requestedExecutionLevel": "asInvoker",
+      "forceCodeSigning": false,
+      "signAndEditExecutable": false,
+      "verifyUpdateCodeSignature": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "FitTracker",
+      "installerIcon": "frontend/www/icons/icon.ico",
+      "installerHeaderIcon": "frontend/www/icons/icon.ico",
+      "license": null,
+      "runAfterFinish": true,
+      "deleteAppDataOnUninstall": false
+    },
+    "mac": {
+      "target": "dmg",
+      "icon": "frontend/www/icons/icon.ico",
+      "category": "public.app-category.healthcare-fitness"
+    },
+    "linux": {
+      "target": ["AppImage", "deb"],
+      "category": "Healthcare"
+    },
+    "compression": "normal"
+  },
+  "devDependencies": {
+    "electron": "^41.2.2",
+    "electron-builder": "^26.8.1"
+  }
+}

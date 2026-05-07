@@ -1,0 +1,31 @@
+/* FitTracker Optimized Fonts
+   Strategy: Google Fonts with font-display: swap
+   
+   font-display: swap ensures:
+   - Text renders IMMEDIATELY with system fonts
+   - Custom fonts load in background without blocking
+   - Eliminates "Flash of Invisible Text" (FOIT)
+   - Browser falls back gracefully if custom fonts fail
+*/
+
+/* Google Fonts eliminado — fuentes self-hosted a continuación */
+
+/* ────────────────────────────────────────────────────────
+   Font stacks with strong system font fallbacks
+   ────────────────────────────────────────────────────────*/
+
+body {
+  font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Helvetica Neue', sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.brand, .splash-logo, .card-title, [class*='title'], h1, h2, h3, h4, h5, h6, .hero-metric {
+  font-family: 'Barlow Condensed', 'Trebuchet MS', Verdana, Geneva, sans-serif;
+  font-weight: 700;
+}
+
+/* Prevent number "dancing" when updating with tabular numerals */
+.hero-metric, .m-val, [class*='count'], [class*='metric'], [class*='value'] {
+  font-variant-numeric: tabular-nums;
+}

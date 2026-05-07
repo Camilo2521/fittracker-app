@@ -1,0 +1,46 @@
+# Dependencies
+node_modules/
+frontend/node_modules/
+backend/node_modules/
+
+# Build artifacts — regenerable, do not commit
+dist-electron/
+dist/
+build/
+frontend/android/
+
+# Logs
+*.log
+.DS_Store
+Thumbs.db
+
+# Environment files — never commit secrets
+backend/.env
+python_service/.env
+*.env
+!*.env.example
+
+# SQLite databases — runtime data, not source
+database/*.db
+database/*.db-shm
+database/*.db-wal
+python_service/*.db
+python_service/*.db-shm
+python_service/*.db-wal
+
+# IDE and tool files
+*.sqbpro
+.vscode/
+.idea/
+
+# iOS (unused but prevent accidental tracking)
+ios/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# ML models — large binary files, download separately
+python_service/*.pt

@@ -1,0 +1,25 @@
+{
+  "appId": "com.extremo.tracker",
+  "appName": "FitTracker",
+  "webDir": "www",
+  "server": {
+    "androidScheme": "http"
+  },
+  "android": {
+    "backgroundColor": "#1A1A18",
+    "webContentsDebuggingEnabled": true
+  },
+  "plugins": {
+    "Camera": {},
+    "SplashScreen": {
+      "launchShowDuration": 1500,
+      "launchAutoHide": true,
+      "backgroundColor": "#1A1A18",
+      "showSpinner": false
+    },
+    "StatusBar": {
+      "style": "Dark",
+      "backgroundColor": "#1A1A18"
+    }
+  }
+}
