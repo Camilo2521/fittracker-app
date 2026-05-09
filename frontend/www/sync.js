@@ -29,7 +29,9 @@ class BackendSync {
   get baseUrl() {
     if (!this._baseUrl) {
       const stored  = localStorage.getItem('fittracker_backend_url');
-      const derived = window.BACKEND ? window.BACKEND.replace('/api/v1', '') : 'http://localhost:3000';
+      const derived = window.BACKEND
+        ? window.BACKEND.replace('/api/v1', '')
+        : (AppConfig?.api?.baseUrl?.replace('/api/v1', '') || 'http://localhost:3000');
       this._baseUrl = stored || derived;
     }
     return this._baseUrl;
@@ -231,13 +233,7 @@ class BackendSync {
       const res = await fetch(`${this.baseUrl}/health`, {
         signal: AbortSignal.timeout(2000),
       });
-      if (res.ok) return true;
-      // 503 = degraded (postgres down) but SQLite is up — still usable
-      if (res.status === 503) {
-        const data = await res.json().catch(() => ({}));
-        return data?.checks?.sqlite === 'ok';
-      }
-      return false;
+      return res.ok;
     } catch { return false; }
   }
 

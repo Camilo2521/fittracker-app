@@ -30,6 +30,7 @@ if ('serviceWorker' in navigator) {
 <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
 
 <!-- ⚡ CRITICAL: Self-hosted fonts (eliminadas CDN) -->
+<script src="config.js"></script>
 <link rel="preload" href="assets/fonts.css" as="style">
 <link rel="stylesheet" href="assets/fonts.css">
 
@@ -764,13 +765,9 @@ body {
 
 <script>
 // ── Auth bootstrap (debe estar antes del HTML de auth) ────────────────────────
-// En dispositivo nativo usa 10.0.2.2 (emulador) o la IP LAN del PC (teléfono físico).
-// Para teléfono físico cambia DEVICE_BACKEND a la IP de tu PC en la red WiFi.
-const DEVICE_BACKEND = 'http://192.168.80.12:3000/api/v1';
+// La URL del backend se configura en frontend/www/env.js
 const _isNative = !!(window.Capacitor?.isNativePlatform?.());
-const BACKEND = _isNative
-  ? DEVICE_BACKEND                       // emulador y teléfono físico → IP LAN del PC
-  : 'http://localhost:3000/api/v1';      // navegador web
+const BACKEND   = _isNative ? AppConfig.api.deviceUrl : AppConfig.api.baseUrl;
 
 const AUTH = {
   token: null, user: null,
