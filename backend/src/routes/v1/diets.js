@@ -5,6 +5,11 @@ const router    = express.Router();
 const { FLAGS } = require('../../middleware/featureFlags');
 const vision    = require('../../services/visionClient');
 const pg        = require('../../db/postgres');
+const { generateInternalToken } = require('../../utils/internalToken');
+const { validateDate, validateId, validateString, validateEnum, abort } = require('../../utils/validate');
+const { VALID_GOALS } = require('../../utils/constants');
+
+const PYTHON_BASE = process.env.PYTHON_SERVICE_URL || 'http://localhost:8000';
 
 /**
  * @swagger
@@ -36,6 +41,11 @@ router.post('/generate', async (req, res) => {
   if (!userId || !weekStart) {
     return res.status(400).json({ error: 'userId y weekStart son requeridos' });
   }
+  if (abort(res, [
+    validateId(userId, 'userId'),
+    validateDate(weekStart, 'weekStart'),
+    validateEnum(req.body.goal, 'goal', VALID_GOALS),
+  ])) return;
 
   const { rows } = await pg.query('SELECT * FROM accounts WHERE id = $1', [userId]);
   const user = rows[0];
@@ -65,8 +75,7 @@ router.post('/generate', async (req, res) => {
 router.get('/:userId/current', async (req, res) => {
   const weekStart = _currentWeekStart();
   try {
-    const result = await pg.query(
-      `SELECT dp.*, json_agg(
+    const result = await pg.query(`SELECT dp.*, json_agg(
          json_build_object(
            'day_of_week', dd.day_of_week,
            'total_calories', dd.total_calories,
@@ -83,6 +92,7 @@ router.get('/:userId/current', async (req, res) => {
     res.json(result.rows[0]);
   } catch (e) {
     if (e?.code === '42P01') return res.status(404).json({ error: 'Feature no disponible aún' });
+    console.error('[diets] GET current error:', e.message);
     res.status(503).json({ error: 'Servicio de dietas no disponible' });
   }
 });
@@ -108,7 +118,8 @@ router.put('/meals/:mealId', async (req, res) => {
       [name || null, calories || null, prot || null, carb || null, fatV || null, req.params.mealId]
     );
     res.json({ success: true });
-  } catch {
+  } catch (err) {
+    console.error('[diets] PUT /meals error:', err.message);
     res.status(500).json({ error: 'Error actualizando comida' });
   }
 });
@@ -119,14 +130,15 @@ router.put('/meals/:mealId', async (req, res) => {
 router.post('/documents', async (req, res) => {
   const { title, content, type = 'nutrition' } = req.body;
   if (!title || !content) return res.status(400).json({ error: 'title y content son requeridos' });
+  if (abort(res, [
+    validateString(title,   'title',   { maxLength: 200 }),
+    validateString(content, 'content', { maxLength: 50000 }),
+  ])) return;
   try {
     const { rows } = await pg.query(
       'INSERT INTO nutrition_documents (title, content, type) VALUES ($1,$2,$3) RETURNING id',
       [title, content, type]
     );
-    // Fire-and-forget forward to Python RAG
-    const { generateInternalToken } = require('../../utils/internalToken');
-    const PYTHON_BASE = process.env.PYTHON_SERVICE_URL || 'http://localhost:8000';
     fetch(`${PYTHON_BASE}/rag/ingest`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-internal-token': generateInternalToken() },
@@ -135,7 +147,8 @@ router.post('/documents', async (req, res) => {
     }).catch(() => {});
     res.status(201).json({ success: true, id: rows[0].id });
   } catch (err) {
-    res.status(500).json({ error: 'Error guardando documento', detail: err.message });
+    console.error('[diets] POST /documents error:', err.message);
+    res.status(500).json({ error: 'Error guardando documento' });
   }
 });
 

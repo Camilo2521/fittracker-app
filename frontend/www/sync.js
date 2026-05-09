@@ -132,19 +132,14 @@ class BackendSync {
 
   // ── REGISTRO DE USUARIO (Phase 2) ────────────────────────────
 
-  /**
-   * Registra o actualiza el perfil del usuario en el backend.
-   * Se llama desde app-init.js al completar el onboarding.
-   */
   async registerUser(profile) {
     if (!profile?.externalId) return null;
-
-    // Intentar GET primero para saber si el usuario ya existe
-    const existing = await this._get(`/api/users/${profile.externalId}`);
-    if (existing) {
-      return this._put(`/api/users/${profile.externalId}`, profile);
-    }
-    return this._post('/api/users', profile);
+    return this._post('/api/v1/auth/register', {
+      name:  profile.name  || '',
+      email: profile.email || '',
+      weight: profile.currentWeight || null,
+      goal:   profile.goal || 'maintain',
+    });
   }
 
   // ── SYNC DE DATOS CORE (Phase 2) ─────────────────────────────
@@ -219,11 +214,8 @@ class BackendSync {
     return this._post('/api/v1/diets/generate', { userId, weekStart });
   }
 
-  /**
-   * Devuelve estadísticas semanales desde el backend.
-   */
   getWeeklyStats(week) {
-    return this._get(`/api/stats/weekly?week=${week}`);
+    return this._get(`/api/v1/auth/workout-logs?week=${encodeURIComponent(week)}`);
   }
 
   // ── UTILIDADES ───────────────────────────────────────────────

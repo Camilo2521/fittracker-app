@@ -4,6 +4,10 @@ const express = require('express');
 const router  = express.Router();
 const pg      = require('../../db/postgres');
 const ollama  = require('../../services/ollamaService');
+const { validateId, abort } = require('../../utils/validate');
+const { ACTIVITY_FACTORS }  = require('../../utils/constants');
+
+const IMAGE_SIZE_LIMIT = 5_000_000; // ~5 MB base64
 
 // ── Memory helpers (PostgreSQL) ────────────────────────────────────────────────
 
@@ -32,6 +36,7 @@ async function _saveMemories(accountId, pairs) {
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK');
+    console.error('[ai] _saveMemories error:', err.message);
   } finally {
     client.release();
   }
@@ -98,8 +103,7 @@ function _buildSystemPrompt(p = {}, memories = []) {
     const tmb  = male
       ? Math.round(88.36 + 13.4 * w + 4.8 * h - 5.7 * a)
       : Math.round(447.6 + 9.2 * w + 3.1 * h - 4.3 * a);
-    const actF   = { sedentary: 1.2, light: 1.375, moderate: 1.55, active: 1.725, very_active: 1.9 };
-    const tdee   = Math.round(tmb * (actF[p.activityLevel] || 1.55));
+    const tdee   = Math.round(tmb * (ACTIVITY_FACTORS[p.activityLevel] || ACTIVITY_FACTORS.moderate));
     const target = p.goal === 'lose' ? tdee - 400 : p.goal === 'gain' ? tdee + 300 : tdee;
     const bmi    = parseFloat((w / ((h / 100) ** 2)).toFixed(1));
     const prot   = Math.round(w * (p.goal === 'gain' ? 2.0 : 1.7));
@@ -180,8 +184,7 @@ function _calcMetrics(p) {
   const tmb  = male
     ? Math.round(88.36 + 13.4 * w + 4.8 * h - 5.7 * a)
     : Math.round(447.6 + 9.2 * w + 3.1 * h - 4.3 * a);
-  const actF  = { sedentary: 1.2, light: 1.375, moderate: 1.55, active: 1.725, very_active: 1.9 };
-  const tdee  = Math.round(tmb * (actF[p.activityLevel] || 1.55));
+  const tdee  = Math.round(tmb * (ACTIVITY_FACTORS[p.activityLevel] || ACTIVITY_FACTORS.moderate));
   const target = p.goal === 'lose' ? tdee - 350 : p.goal === 'gain' ? tdee + 300 : tdee;
   const bmi   = h ? Math.round((w / ((h / 100) ** 2)) * 10) / 10 : null;
   return { tmb, tdee, target, bmi };
@@ -327,6 +330,7 @@ function _localAI(userMsg, p, history) {
 router.post('/body-scan', async (req, res) => {
   const { imageBase64 } = req.body;
   if (!imageBase64) return res.status(400).json({ error: 'imageBase64 requerido' });
+  if (imageBase64.length > IMAGE_SIZE_LIMIT) return res.status(413).json({ error: 'Imagen demasiado grande (máx. 5 MB)' });
 
   return res.json({
     personDetected: true, bodyType: 'mesomorfo', bodyTypeLabel: 'Complexión media',
@@ -467,14 +471,16 @@ router.get('/status', async (_req, res) => {
 
 // ── GET /api/v1/ai/memory ──────────────────────────────────────────────────────
 router.get('/memory', async (req, res) => {
-  const accountId = req.query.accountId ? parseInt(req.query.accountId) : null;
+  if (req.query.accountId && abort(res, [validateId(req.query.accountId, 'accountId')])) return;
+  const accountId = req.query.accountId ? parseInt(req.query.accountId, 10) : null;
   res.json(await _loadMemories(accountId));
 });
 
 // ── DELETE /api/v1/ai/memory/:key ─────────────────────────────────────────────
 router.delete('/memory/:key', async (req, res) => {
-  const accountId = req.query.accountId ? parseInt(req.query.accountId) : null;
-  if (!accountId) return res.status(400).json({ error: 'accountId requerido' });
+  if (!req.query.accountId) return res.status(400).json({ error: 'accountId requerido' });
+  if (abort(res, [validateId(req.query.accountId, 'accountId')])) return;
+  const accountId = parseInt(req.query.accountId, 10);
   await pg.query('DELETE FROM user_memories WHERE account_id = $1 AND key = $2', [accountId, req.params.key]);
   res.json({ deleted: req.params.key });
 });

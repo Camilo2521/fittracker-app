@@ -6,6 +6,10 @@ const pg      = require('../../db/postgres');
 
 const N8N_SECRET = process.env.N8N_SECRET || '';
 
+if (!N8N_SECRET) {
+  console.warn('[n8n] N8N_SECRET no configurado — los endpoints de n8n están sin protección. Añade N8N_SECRET a backend/.env en producción.');
+}
+
 function verifyN8nSecret(req, res, next) {
   if (!N8N_SECRET) return next();
   if ((req.headers['x-n8n-secret'] || '') !== N8N_SECRET) {
@@ -67,21 +71,26 @@ router.post('/build-prompt', verifyN8nSecret, (req, res) => {
 
 // ── POST /api/v1/n8n/callback ─────────────────────────────────────────────────
 router.post('/callback', verifyN8nSecret, async (req, res) => {
-  const { accountId, event, suggestion, suggestionType, metadata } = req.body;
+  const { accountId, event, suggestion, suggestionType } = req.body;
   if (!accountId)  return res.status(400).json({ error: 'accountId es requerido' });
   if (!suggestion) return res.status(400).json({ error: 'suggestion es requerido' });
 
-  const { rows: accs } = await pg.query('SELECT id, name FROM accounts WHERE id = $1', [accountId]);
-  if (!accs.length) return res.status(404).json({ error: 'Cuenta no encontrada' });
+  try {
+    const { rows: accs } = await pg.query('SELECT id, name FROM accounts WHERE id = $1', [accountId]);
+    if (!accs.length) return res.status(404).json({ error: 'Cuenta no encontrada' });
 
-  const type = suggestionType || event || 'n8n_coaching';
-  const { rows } = await pg.query(
-    'INSERT INTO ai_suggestions (account_id, suggestion_type, content) VALUES ($1,$2,$3) RETURNING id',
-    [accountId, type, suggestion]
-  );
+    const type = suggestionType || event || 'n8n_coaching';
+    const { rows } = await pg.query(
+      'INSERT INTO ai_suggestions (account_id, suggestion_type, content) VALUES ($1,$2,$3) RETURNING id',
+      [accountId, type, suggestion]
+    );
 
-  console.log(`[n8n] ✅ Sugerencia guardada — cuenta ${accountId} (${accs[0].name}) tipo="${type}" id=${rows[0].id}`);
-  res.json({ ok: true, id: rows[0].id, accountId, type });
+    console.log(`[n8n] ✅ Sugerencia guardada — cuenta ${accountId} (${accs[0].name}) tipo="${type}" id=${rows[0].id}`);
+    res.json({ ok: true, id: rows[0].id, accountId, type });
+  } catch (err) {
+    console.error('[n8n] callback error:', err.message);
+    res.status(500).json({ error: 'Error guardando sugerencia' });
+  }
 });
 
 // ── GET /api/v1/n8n/status ────────────────────────────────────────────────────
@@ -91,69 +100,78 @@ router.get('/status', async (req, res) => {
     ? webhookUrl.replace(/(\/webhook\/)[^?]+/, '$1***')
     : null;
 
-  const { rows } = await pg.query(
-    `SELECT COUNT(*) AS c FROM ai_suggestions
-     WHERE suggestion_type LIKE 'n8n%'
-        OR suggestion_type IN ('workout.logged','diet.logged','progress.updated','weekly.checkin')`
-  );
-
-  res.json({
-    configured:       !!webhookUrl,
-    webhook_url:      safeUrl,
-    secret_set:       !!N8N_SECRET,
-    n8n_suggestions:  parseInt(rows[0].c, 10),
-    events_supported: ['workout.logged', 'diet.logged', 'progress.updated', 'weekly.checkin'],
-  });
+  try {
+    const { rows } = await pg.query(
+      `SELECT COUNT(*) AS c FROM ai_suggestions
+       WHERE suggestion_type LIKE 'n8n%'
+          OR suggestion_type IN ('workout.logged','diet.logged','progress.updated','weekly.checkin')`
+    );
+    res.json({
+      configured:       !!webhookUrl,
+      webhook_url:      safeUrl,
+      secret_set:       !!N8N_SECRET,
+      n8n_suggestions:  parseInt(rows[0].c, 10),
+      events_supported: ['workout.logged', 'diet.logged', 'progress.updated', 'weekly.checkin'],
+    });
+  } catch (err) {
+    console.error('[n8n] status error:', err.message);
+    res.status(500).json({ error: 'Error consultando estado' });
+  }
 });
 
 // ── GET /api/v1/n8n/weekly-users ─────────────────────────────────────────────
 router.get('/weekly-users', verifyN8nSecret, async (req, res) => {
-  const { rows } = await pg.query(`
-    SELECT DISTINCT
-      a.id,
-      a.name,
-      a.goal,
-      a.weight,
-      a.height_cm,
-      a.age,
-      a.gender,
-      a.activity_level,
-      a.restrictions,
-      (SELECT COUNT(*) FROM workout_logs  w WHERE w.account_id = a.id AND w.date >= CURRENT_DATE - INTERVAL '7 days')  AS weekly_workouts,
-      (SELECT COUNT(*) FROM diet_logs     d WHERE d.account_id = a.id AND d.date >= CURRENT_DATE - INTERVAL '7 days')  AS weekly_diet_logs,
-      (SELECT AVG(total_kcal) FROM diet_logs d WHERE d.account_id = a.id AND d.date >= CURRENT_DATE - INTERVAL '7 days' AND d.total_kcal IS NOT NULL) AS avg_kcal,
-      (SELECT weight FROM progress_logs   p WHERE p.account_id = a.id ORDER BY date DESC LIMIT 1)          AS last_weight,
-      (SELECT weight FROM progress_logs   p WHERE p.account_id = a.id ORDER BY date DESC OFFSET 1 LIMIT 1) AS prev_weight
-    FROM accounts a
-    WHERE a.id IN (
-      SELECT account_id FROM workout_logs  WHERE date >= CURRENT_DATE - INTERVAL '14 days'
-      UNION
-      SELECT account_id FROM diet_logs     WHERE date >= CURRENT_DATE - INTERVAL '14 days'
-      UNION
-      SELECT account_id FROM progress_logs WHERE date >= CURRENT_DATE - INTERVAL '14 days'
-    )
-  `);
+  try {
+    const { rows } = await pg.query(`
+      SELECT DISTINCT
+        a.id,
+        a.name,
+        a.goal,
+        a.weight,
+        a.height_cm,
+        a.age,
+        a.gender,
+        a.activity_level,
+        a.restrictions,
+        (SELECT COUNT(*) FROM workout_logs  w WHERE w.account_id = a.id AND w.date >= CURRENT_DATE - INTERVAL '7 days')  AS weekly_workouts,
+        (SELECT COUNT(*) FROM diet_logs     d WHERE d.account_id = a.id AND d.date >= CURRENT_DATE - INTERVAL '7 days')  AS weekly_diet_logs,
+        (SELECT AVG(total_kcal) FROM diet_logs d WHERE d.account_id = a.id AND d.date >= CURRENT_DATE - INTERVAL '7 days' AND d.total_kcal IS NOT NULL) AS avg_kcal,
+        (SELECT weight FROM progress_logs   p WHERE p.account_id = a.id ORDER BY date DESC LIMIT 1)          AS last_weight,
+        (SELECT weight FROM progress_logs   p WHERE p.account_id = a.id ORDER BY date DESC OFFSET 1 LIMIT 1) AS prev_weight
+      FROM accounts a
+      WHERE a.id IN (
+        SELECT account_id FROM workout_logs  WHERE date >= CURRENT_DATE - INTERVAL '14 days'
+        UNION
+        SELECT account_id FROM diet_logs     WHERE date >= CURRENT_DATE - INTERVAL '14 days'
+        UNION
+        SELECT account_id FROM progress_logs WHERE date >= CURRENT_DATE - INTERVAL '14 days'
+      )
+    `);
 
-  const enriched = rows.map(u => ({
-    accountId: u.id,
-    user: {
-      name: u.name, goal: u.goal, weight: u.weight,
-      height: u.height_cm, age: u.age, gender: u.gender,
-      activityLevel: u.activity_level, restrictions: u.restrictions,
-    },
-    context: {
-      weeklyWorkouts: parseInt(u.weekly_workouts, 10),
-      weeklyDietLogs: parseInt(u.weekly_diet_logs, 10),
-      targetWorkouts: 4,
-      avgKcal:        u.avg_kcal ? Math.round(u.avg_kcal) : null,
-      weightChange:   (u.last_weight && u.prev_weight)
-        ? parseFloat((u.last_weight - u.prev_weight).toFixed(1))
-        : null,
-    },
-    event: 'weekly.checkin',
-  }));
+    const enriched = rows.map(u => ({
+      accountId: u.id,
+      user: {
+        name: u.name, goal: u.goal, weight: u.weight,
+        height: u.height_cm, age: u.age, gender: u.gender,
+        activityLevel: u.activity_level, restrictions: u.restrictions,
+      },
+      context: {
+        weeklyWorkouts: parseInt(u.weekly_workouts, 10),
+        weeklyDietLogs: parseInt(u.weekly_diet_logs, 10),
+        targetWorkouts: 4,
+        avgKcal:        u.avg_kcal ? Math.round(u.avg_kcal) : null,
+        weightChange:   (u.last_weight && u.prev_weight)
+          ? parseFloat((u.last_weight - u.prev_weight).toFixed(1))
+          : null,
+      },
+      event: 'weekly.checkin',
+    }));
 
-  res.json({ users: enriched, count: enriched.length, week: new Date().toISOString().slice(0, 10) });
+    res.json({ users: enriched, count: enriched.length, week: new Date().toISOString().slice(0, 10) });
+  } catch (err) {
+    console.error('[n8n] weekly-users error:', err.message);
+    res.status(500).json({ error: 'Error consultando usuarios semanales' });
+  }
 });
 
 module.exports = router;

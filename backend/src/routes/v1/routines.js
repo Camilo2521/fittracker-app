@@ -5,6 +5,8 @@ const router       = express.Router();
 const { FLAGS }    = require('../../middleware/featureFlags');
 const vision       = require('../../services/visionClient');
 const pg           = require('../../db/postgres');
+const { validateId, validateEnum, abort } = require('../../utils/validate');
+const { VALID_GOALS } = require('../../utils/constants');
 
 /**
  * @swagger
@@ -33,6 +35,10 @@ const pg           = require('../../db/postgres');
 router.post('/generate', async (req, res) => {
   const { userId } = req.body;
   if (!userId) return res.status(400).json({ error: 'userId es requerido' });
+  if (abort(res, [
+    validateId(userId, 'userId'),
+    validateEnum(req.body.goal, 'goal', VALID_GOALS),
+  ])) return;
 
   const { rows } = await pg.query('SELECT * FROM accounts WHERE id = $1', [userId]);
   const user = rows[0];
@@ -80,6 +86,7 @@ router.get('/:userId/active', async (req, res) => {
     res.json(result.rows[0]);
   } catch (e) {
     if (e?.code === '42P01') return res.status(404).json({ error: 'Feature no disponible aún' });
+    console.error('[routines] GET active error:', e.message);
     res.status(503).json({ error: 'Servicio de rutinas no disponible' });
   }
 });

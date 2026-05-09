@@ -49,12 +49,13 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS — sólo acepta peticiones del backend Node.js
+# CORS — configurable via CORS_ORIGINS env var (comma-separated)
+_cors_origins = [o.strip() for o in get_settings().cors_origins.split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:8080"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=_cors_origins,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "x-internal-token"],
 )
 
 # Routers

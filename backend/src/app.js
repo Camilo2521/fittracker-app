@@ -5,17 +5,35 @@
 
 require('dotenv').config();
 
-const express  = require('express');
-const helmet   = require('helmet');
-const cors     = require('cors');
-const morgan   = require('morgan');
-const { runMigrations } = require('./db/migrate');
+const express    = require('express');
+const helmet     = require('helmet');
+const cors       = require('cors');
+const morgan     = require('morgan');
+const requestId  = require('./middleware/requestId');
+const { generalLimiter } = require('./middleware/rateLimiter');
+const { runMigrations }  = require('./db/migrate');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
 
 // ── MIDDLEWARE ────────────────────────────────────────────────
-app.use(helmet({ crossOriginResourcePolicy: false }));
+app.use(requestId);
+app.set('trust proxy', 1);
+app.use(helmet({
+  crossOriginResourcePolicy: false,
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc:  ["'self'"],
+      scriptSrc:   ["'self'", "'unsafe-inline'"],
+      styleSrc:    ["'self'", "'unsafe-inline'"],
+      imgSrc:      ["'self'", 'data:'],
+      connectSrc:  ["'self'"],
+      frameSrc:    ["'none'"],
+      objectSrc:   ["'none'"],
+    },
+  },
+}));
+app.use(generalLimiter);
 
 const allowedOrigins = (process.env.CORS_ORIGINS || 'http://localhost:8080')
   .split(',')
@@ -97,12 +115,13 @@ app.get('/health', async (_req, res) => {
 });
 
 // ── ERROR HANDLING ────────────────────────────────────────────
-app.use((err, _req, res, _next) => {
+app.use((err, req, res, _next) => {
   const status  = err.status || 500;
   const message = err.expose || process.env.NODE_ENV !== 'production'
     ? err.message
     : 'Internal server error';
-  res.status(status).json({ error: message });
+  console.error(`[error] [${req.id}] ${status} — ${err.message}`);
+  res.status(status).json({ error: message, requestId: req.id });
 });
 
 app.use((_req, res) => res.status(404).json({ error: 'Route not found' }));

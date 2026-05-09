@@ -1,7 +1,9 @@
-/**
- * Data API Layer
- * High-level interface for all data operations in FitTracker
- */
+const _VALID_GOALS      = Object.freeze(['lose', 'gain', 'maintain']);
+const _VALID_TYPES      = Object.freeze(['strength', 'cardio', 'flexibility']);
+const _VALID_INTENSITIES = Object.freeze(['low', 'medium', 'high']);
+const _WEIGHT_MIN = 30;
+const _WEIGHT_MAX = 300;
+const _WATER_MAX  = 20;
 
 class FitTrackerAPI {
   constructor() {
@@ -35,7 +37,7 @@ class FitTrackerAPI {
 
   // ── WEIGHT MANAGEMENT ──────────────────────────────────────
   async addWeight(weight, date = this._today()) {
-    if (weight < 40 || weight > 200) throw new Error('Invalid weight');
+    if (weight < _WEIGHT_MIN || weight > _WEIGHT_MAX) throw new Error('Invalid weight');
 
     const result = await DB.add(STORES.weights, {
       userId: this.userId,
@@ -64,7 +66,7 @@ class FitTrackerAPI {
   }
 
   async updateWeight(id, weight) {
-    if (weight < 40 || weight > 200) throw new Error('Invalid weight');
+    if (weight < _WEIGHT_MIN || weight > _WEIGHT_MAX) throw new Error('Invalid weight');
     return await DB.update(STORES.weights, {
       id,
       userId: this.userId,
@@ -78,10 +80,8 @@ class FitTrackerAPI {
 
   // ── GOALS ──────────────────────────────────────────────────
   async setGoal(goal, targetWeight) {
-    if (!['lose', 'gain', 'maintain'].includes(goal)) {
-      throw new Error('Invalid goal');  // eslint-disable-line
-    }
-    if (targetWeight < 40 || targetWeight > 200) {
+    if (!_VALID_GOALS.includes(goal)) throw new Error('Invalid goal');
+    if (targetWeight < _WEIGHT_MIN || targetWeight > _WEIGHT_MAX) {
       throw new Error('Invalid target weight');
     }
 
@@ -178,7 +178,7 @@ class FitTrackerAPI {
 
   // ── WATER INTAKE ────────────────────────────────────────────
   async setWaterIntake(glasses, date = this._today()) {
-    if (glasses < 0 || glasses > 20) throw new Error('Invalid water amount');
+    if (glasses < 0 || glasses > _WATER_MAX) throw new Error('Invalid water amount');
 
     const existing = await this._getWaterIntake(date);
     if (existing.length) {
@@ -217,12 +217,8 @@ class FitTrackerAPI {
 
   // ── WORKOUTS ────────────────────────────────────────────────
   async logWorkout(type, duration, intensity, date = this._today()) {
-    if (!['strength', 'cardio', 'flexibility'].includes(type)) {
-      throw new Error('Invalid workout type');
-    }
-    if (!['low', 'medium', 'high'].includes(intensity)) {
-      throw new Error('Invalid intensity');
-    }
+    if (!_VALID_TYPES.includes(type))       throw new Error('Invalid workout type');
+    if (!_VALID_INTENSITIES.includes(intensity)) throw new Error('Invalid intensity');
 
     const result = await DB.add(STORES.workouts, {
       userId: this.userId,

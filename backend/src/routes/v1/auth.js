@@ -1,17 +1,18 @@
 'use strict';
 
-const express = require('express');
-const router  = express.Router();
-const bcrypt  = require('bcryptjs');
-const jwt     = require('jsonwebtoken');
-const pg      = require('../../db/postgres');
-const n8n     = require('../../services/n8nWebhookService');
+const express  = require('express');
+const router   = express.Router();
+const bcrypt   = require('bcryptjs');
+const jwt      = require('jsonwebtoken');
+const pg       = require('../../db/postgres');
+const n8n      = require('../../services/n8nWebhookService');
+const { authLimiter }                               = require('../../middleware/rateLimiter');
+const { validateDate, validateNumber, abort }       = require('../../utils/validate');
+const { VALID_GOALS, VALID_GENDERS, VALID_ACTIVITY_LEVELS } = require('../../utils/constants');
 
-const JWT_SECRET = process.env.JWT_SECRET;
-if (!JWT_SECRET) {
-  throw new Error('[auth] JWT_SECRET no está configurado. Añade JWT_SECRET a backend/.env');
-}
-const JWT_EXPIRES = '30d';
+const JWT_SECRET  = process.env.JWT_SECRET;
+if (!JWT_SECRET) throw new Error('[auth] JWT_SECRET no está configurado. Añade JWT_SECRET a backend/.env');
+const JWT_EXPIRES = process.env.JWT_EXPIRES || '30d';
 
 function _sign(account) {
   return jwt.sign(
@@ -63,7 +64,7 @@ function _safeUser(acc) {
  *       201: { description: Usuario creado, token JWT }
  *       409: { description: Email ya registrado }
  */
-router.post('/register', async (req, res) => {
+router.post('/register', authLimiter, async (req, res) => {
   const {
     email, password, name = '',
     goal = 'maintain', weight, height, age, gender,
@@ -71,8 +72,11 @@ router.post('/register', async (req, res) => {
   } = req.body;
 
   if (!email || !password) return res.status(400).json({ error: 'Email y contraseña requeridos' });
-  if (password.length < 6)  return res.status(400).json({ error: 'La contraseña debe tener al menos 6 caracteres' });
+  if (password.length < 8)  return res.status(400).json({ error: 'La contraseña debe tener al menos 8 caracteres' });
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ error: 'Email inválido' });
+  if (weight  !== undefined && abort(res, [validateNumber(weight,  'weight',  { min: 30, max: 500 })])) return;
+  if (height  !== undefined && abort(res, [validateNumber(height,  'height',  { min: 50, max: 280 })])) return;
+  if (age     !== undefined && abort(res, [validateNumber(age,     'age',     { min: 5,  max: 120 })])) return;
 
   try {
     const exists = await pg.query('SELECT id FROM accounts WHERE email = $1', [email.trim()]);
@@ -119,7 +123,7 @@ router.post('/register', async (req, res) => {
  *       200: { description: Token JWT + datos de usuario }
  *       401: { description: Credenciales incorrectas }
  */
-router.post('/login', async (req, res) => {
+router.post('/login', authLimiter, async (req, res) => {
   const { email, password } = req.body;
   if (!email || !password) return res.status(400).json({ error: 'Email y contraseña requeridos' });
 

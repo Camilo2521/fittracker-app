@@ -4,6 +4,8 @@ const express = require('express');
 const router  = express.Router();
 const vision  = require('../../services/visionClient');
 const pg      = require('../../db/postgres');
+const { validateEnum, abort } = require('../../utils/validate');
+const { VALID_EXERCISE_TYPES } = require('../../utils/constants');
 
 /**
  * POST /api/v1/reps/sessions
@@ -15,6 +17,7 @@ router.post('/sessions', async (req, res) => {
   if (!userId || !exerciseType) {
     return res.status(400).json({ error: 'userId y exerciseType son requeridos' });
   }
+  if (abort(res, [validateEnum(exerciseType, 'exerciseType', VALID_EXERCISE_TYPES, { required: true })])) return;
 
   const result = await vision.createSession(userId, exerciseType);
 
@@ -85,13 +88,14 @@ router.get('/history/:userId', async (req, res) => {
       `SELECT id, exercise_type, mode, started_at, ended_at,
               total_reps, total_sets, calories_burned, avg_form_score
        FROM rep_sessions
-       WHERE external_id = $1
+       WHERE account_id = $1
        ORDER BY started_at DESC
        LIMIT 50`,
       [req.params.userId]
     );
     res.json(result?.rows || []);
   } catch (e) {
+    console.error('[reps] history error:', e.message);
     res.status(500).json({ error: 'Error consultando historial' });
   }
 });
