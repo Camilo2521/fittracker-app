@@ -358,6 +358,50 @@ router.post('/body-scan', async (req, res) => {
   });
 });
 
+/**
+ * @swagger
+ * tags:
+ *   name: IA
+ *   description: Chat con FitBot, estado del modelo y memoria
+ *
+ * /api/v1/ai/chat:
+ *   post:
+ *     tags: [IA]
+ *     summary: Enviar mensaje al asistente FitBot (Ollama local)
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [messages]
+ *             properties:
+ *               messages:
+ *                 type: array
+ *                 items:
+ *                   type: object
+ *                   properties:
+ *                     role:    { type: string, enum: [user, assistant] }
+ *                     content: { type: string }
+ *               userProfile:
+ *                 type: object
+ *                 properties:
+ *                   id:     { type: integer }
+ *                   name:   { type: string }
+ *                   goal:   { type: string }
+ *                   weight: { type: number }
+ *     responses:
+ *       200:
+ *         description: Respuesta del asistente
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 content: { type: string }
+ *                 source:  { type: string, enum: [ollama, local] }
+ *                 model:   { type: string }
+ */
 // ── POST /api/v1/ai/chat ───────────────────────────────────────────────────────
 router.post('/chat', async (req, res) => {
   const { messages = [], userProfile = {} } = req.body;
@@ -438,6 +482,26 @@ router.post('/chat/stream', async (req, res) => {
   res.end();
 });
 
+/**
+ * @swagger
+ * /api/v1/ai/status:
+ *   get:
+ *     tags: [IA]
+ *     summary: Estado del modelo de IA local (Ollama)
+ *     security: []
+ *     responses:
+ *       200:
+ *         description: Estado de Ollama y modelos disponibles
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ollama:            { type: boolean }
+ *                 ollama_model:      { type: string }
+ *                 models_available:  { type: array, items: { type: string } }
+ *                 active_mode:       { type: string, enum: [ollama, local] }
+ */
 // ── GET  /api/v1/ai/status ────────────────────────────────────────────────────
 router.get('/status', async (_req, res) => {
   const ollamaOk = await ollama.isAvailable();

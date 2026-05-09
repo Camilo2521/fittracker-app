@@ -107,6 +107,43 @@ function _safeUser(acc) {
   return safe;
 }
 
+/**
+ * @swagger
+ * tags:
+ *   - name: Auth
+ *     description: Registro, login y perfil de usuario
+ *   - name: Logs
+ *     description: Registro de entrenamientos, dietas y progreso
+ */
+
+/**
+ * @swagger
+ * /api/v1/auth/register:
+ *   post:
+ *     tags: [Auth]
+ *     summary: Registrar nuevo usuario
+ *     security: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [email, password]
+ *             properties:
+ *               email:       { type: string, example: usuario@email.com }
+ *               password:    { type: string, example: "123456" }
+ *               name:        { type: string, example: Camilo }
+ *               goal:        { type: string, enum: [lose, gain, maintain] }
+ *               weight:      { type: number, example: 75 }
+ *               height:      { type: number, example: 175 }
+ *               age:         { type: integer, example: 28 }
+ *               gender:      { type: string, enum: [male, female, other] }
+ *               activityLevel: { type: string, enum: [sedentary, light, moderate, active, very_active] }
+ *     responses:
+ *       201: { description: Usuario creado, token JWT }
+ *       409: { description: Email ya registrado }
+ */
 // ── POST /api/v1/auth/register ────────────────────────────────────────────────
 router.post('/register', async (req, res) => {
   const {
@@ -142,6 +179,27 @@ router.post('/register', async (req, res) => {
   }
 });
 
+/**
+ * @swagger
+ * /api/v1/auth/login:
+ *   post:
+ *     tags: [Auth]
+ *     summary: Iniciar sesión
+ *     security: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [email, password]
+ *             properties:
+ *               email:    { type: string, example: usuario@email.com }
+ *               password: { type: string, example: "123456" }
+ *     responses:
+ *       200: { description: Token JWT + datos de usuario }
+ *       401: { description: Credenciales incorrectas }
+ */
 // ── POST /api/v1/auth/login ───────────────────────────────────────────────────
 router.post('/login', async (req, res) => {
   const { email, password } = req.body;
@@ -162,6 +220,16 @@ router.post('/login', async (req, res) => {
   }
 });
 
+/**
+ * @swagger
+ * /api/v1/auth/me:
+ *   get:
+ *     tags: [Auth]
+ *     summary: Obtener perfil del usuario autenticado
+ *     responses:
+ *       200: { description: Datos del usuario }
+ *       401: { description: Token requerido }
+ */
 // ── GET /api/v1/auth/me ───────────────────────────────────────────────────────
 router.get('/me', requireAuth, (req, res) => {
   const account = db.prepare('SELECT * FROM accounts WHERE id = ?').get(req.accountId);
@@ -169,6 +237,29 @@ router.get('/me', requireAuth, (req, res) => {
   res.json(_safeUser(account));
 });
 
+/**
+ * @swagger
+ * /api/v1/auth/profile:
+ *   put:
+ *     tags: [Auth]
+ *     summary: Actualizar perfil del usuario
+ *     requestBody:
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               name:          { type: string }
+ *               goal:          { type: string, enum: [lose, gain, maintain] }
+ *               weight:        { type: number }
+ *               height:        { type: number }
+ *               age:           { type: integer }
+ *               gender:        { type: string }
+ *               activityLevel: { type: string }
+ *               restrictions:  { type: string }
+ *     responses:
+ *       200: { description: Perfil actualizado }
+ */
 // ── PUT /api/v1/auth/profile ──────────────────────────────────────────────────
 router.put('/profile', requireAuth, (req, res) => {
   const { name, goal, weight, height, age, gender, activityLevel, restrictions } = req.body;

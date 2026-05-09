@@ -7,6 +7,30 @@ const vision       = require('../../services/visionClient');
 const pg           = require('../../db/postgres');
 
 /**
+ * @swagger
+ * tags:
+ *   name: Rutinas
+ *   description: Generación de rutinas de entrenamiento
+ *
+ * /api/v1/routines/generate:
+ *   post:
+ *     tags: [Rutinas]
+ *     summary: Generar rutina de entrenamiento personalizada
+ *     security: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [userId]
+ *             properties:
+ *               userId: { type: string, example: "1" }
+ *               goal:   { type: string, enum: [lose, gain, maintain] }
+ *     responses:
+ *       200: { description: Plan de rutina semanal }
+ */
+/**
  * POST /api/v1/routines/generate
  * Con RAG si está habilitado; generación local si no.
  */

@@ -42,6 +42,32 @@ app.options('*', cors(corsOptions));
 app.use(express.json({ limit: '1mb' }));
 app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev'));
 
+// ── SWAGGER ───────────────────────────────────────────────────
+const swaggerUi   = require('swagger-ui-express');
+const swaggerJsdoc = require('swagger-jsdoc');
+
+const swaggerSpec = swaggerJsdoc({
+  definition: {
+    openapi: '3.0.0',
+    info: {
+      title:       'FitTracker API',
+      version:     '2.0.0',
+      description: 'API REST del backend de FitTracker — autenticación, IA, rutinas, dietas, progreso y más.',
+    },
+    servers: [{ url: 'http://localhost:3000', description: 'Local' }],
+    components: {
+      securitySchemes: {
+        bearerAuth: { type: 'http', scheme: 'bearer', bearerFormat: 'JWT' },
+      },
+    },
+    security: [{ bearerAuth: [] }],
+  },
+  apis: ['./src/routes/v1/*.js'],
+});
+
+app.use('/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, { explorer: true }));
+app.get('/docs.json', (_req, res) => res.json(swaggerSpec));
+
 // ── ROUTES ────────────────────────────────────────────────────
 app.use('/api/v1', require('./routes/v1'));
 

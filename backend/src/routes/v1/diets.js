@@ -7,6 +7,31 @@ const vision    = require('../../services/visionClient');
 const pg        = require('../../db/postgres');
 
 /**
+ * @swagger
+ * tags:
+ *   name: Dietas
+ *   description: Planes de alimentación semanales
+ *
+ * /api/v1/diets/generate:
+ *   post:
+ *     tags: [Dietas]
+ *     summary: Generar plan de dieta semanal
+ *     security: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [userId, weekStart]
+ *             properties:
+ *               userId:    { type: string, example: "1" }
+ *               weekStart: { type: string, example: "2026-05-05" }
+ *               goal:      { type: string, enum: [lose, gain, maintain] }
+ *     responses:
+ *       200: { description: Plan de dieta semanal con calorías por comida }
+ */
+/**
  * POST /api/v1/diets/generate
  * Con RAG si está habilitado; plan local si no.
  */
