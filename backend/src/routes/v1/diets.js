@@ -31,25 +31,20 @@ const pg        = require('../../db/postgres');
  *     responses:
  *       200: { description: Plan de dieta semanal con calorías por comida }
  */
-/**
- * POST /api/v1/diets/generate
- * Con RAG si está habilitado; plan local si no.
- */
 router.post('/generate', async (req, res) => {
   const { userId, weekStart } = req.body;
   if (!userId || !weekStart) {
     return res.status(400).json({ error: 'userId y weekStart son requeridos' });
   }
 
-  const sqliteDb = require('../../db/connection');
-  const user = sqliteDb.prepare('SELECT * FROM users WHERE external_id = ?').get(userId);
+  const { rows } = await pg.query('SELECT * FROM accounts WHERE id = $1', [userId]);
+  const user = rows[0];
 
-  // RAG path
   if (FLAGS.rag_enabled && user) {
     const result = await vision.generateDiet({
       external_id:    userId,
       goal:           user.goal,
-      current_weight: user.current_weight,
+      current_weight: user.weight,
       target_weight:  user.target_weight,
       height_cm:      user.height_cm,
       age:            user.age,
@@ -57,11 +52,9 @@ router.post('/generate', async (req, res) => {
       activity_level: user.activity_level || 'moderate',
       restrictions:   user.restrictions || null,
     }, weekStart);
-
     if (result.ok) return res.json(result.data);
   }
 
-  // Generador local
   const goal = user?.goal || req.body.goal || 'maintain';
   return res.json(_localDiet(goal, weekStart));
 });
@@ -82,14 +75,13 @@ router.get('/:userId/current', async (req, res) => {
        ) AS days
        FROM diet_plans dp
        JOIN diet_days dd ON dd.plan_id = dp.id
-       WHERE dp.external_id = $1 AND dp.week_start = $2
+       WHERE dp.account_id = $1 AND dp.week_start = $2
        GROUP BY dp.id`,
       [req.params.userId, weekStart]
     );
-    if (!result?.rows?.length) return res.status(404).json({ error: 'No hay plan de dieta para esta semana' });
+    if (!result.rows.length) return res.status(404).json({ error: 'No hay plan de dieta para esta semana' });
     res.json(result.rows[0]);
   } catch (e) {
-    // 42P01 = undefined_table — feature not provisioned yet
     if (e?.code === '42P01') return res.status(404).json({ error: 'Feature no disponible aún' });
     res.status(503).json({ error: 'Servicio de dietas no disponible' });
   }
@@ -101,24 +93,18 @@ router.get('/:userId/current', async (req, res) => {
 router.put('/meals/:mealId', async (req, res) => {
   const { name, calories, protein, carbs, fat, protein_g, carbs_g, fat_g } = req.body;
   const prot = protein ?? protein_g;
-  const carb = carbs  ?? carbs_g;
-  const fatV = fat    ?? fat_g;
+  const carb = carbs   ?? carbs_g;
+  const fatV = fat     ?? fat_g;
   try {
-    const sqliteDb = require('../../db/connection');
-    // Try SQLite first (lightweight local store)
-    const info = sqliteDb.prepare(
-      `UPDATE diet_meals SET name=COALESCE(?,name), calories=COALESCE(?,calories),
-       protein_g=COALESCE(?,protein_g), carbs_g=COALESCE(?,carbs_g), fat_g=COALESCE(?,fat_g)
-       WHERE id=?`
-    ).run(name || null, calories || null, prot || null, carb || null, fatV || null, req.params.mealId);
-    if (info.changes > 0) return res.json({ success: true });
-    // Fallback to PostgreSQL
     await pg.query(
       `UPDATE diet_meals
-       SET name=COALESCE($1,name), calories=COALESCE($2,calories),
-           protein_g=COALESCE($3,protein_g), carbs_g=COALESCE($4,carbs_g),
-           fat_g=COALESCE($5,fat_g), manual_override=true
-       WHERE id=$6`,
+       SET name            = COALESCE($1, name),
+           calories        = COALESCE($2, calories),
+           protein_g       = COALESCE($3, protein_g),
+           carbs_g         = COALESCE($4, carbs_g),
+           fat_g           = COALESCE($5, fat_g),
+           manual_override = TRUE
+       WHERE id = $6`,
       [name || null, calories || null, prot || null, carb || null, fatV || null, req.params.mealId]
     );
     res.json({ success: true });
@@ -129,25 +115,16 @@ router.put('/meals/:mealId', async (req, res) => {
 
 /**
  * POST /api/v1/diets/documents
- * Stores a nutrition document locally and optionally forwards to Python RAG.
  */
 router.post('/documents', async (req, res) => {
   const { title, content, type = 'nutrition' } = req.body;
   if (!title || !content) return res.status(400).json({ error: 'title y content son requeridos' });
   try {
-    const sqliteDb = require('../../db/connection');
-    // Ensure table exists
-    sqliteDb.exec(`CREATE TABLE IF NOT EXISTS nutrition_documents (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      title TEXT NOT NULL,
-      content TEXT NOT NULL,
-      type TEXT DEFAULT 'nutrition',
-      created_at TEXT DEFAULT (datetime('now'))
-    )`);
-    const info = sqliteDb.prepare(
-      'INSERT INTO nutrition_documents (title, content, type) VALUES (?, ?, ?)'
-    ).run(title, content, type);
-    // Fire-and-forget forward to Python RAG (non-critical)
+    const { rows } = await pg.query(
+      'INSERT INTO nutrition_documents (title, content, type) VALUES ($1,$2,$3) RETURNING id',
+      [title, content, type]
+    );
+    // Fire-and-forget forward to Python RAG
     const { generateInternalToken } = require('../../utils/internalToken');
     const PYTHON_BASE = process.env.PYTHON_SERVICE_URL || 'http://localhost:8000';
     fetch(`${PYTHON_BASE}/rag/ingest`, {
@@ -156,7 +133,7 @@ router.post('/documents', async (req, res) => {
       body: JSON.stringify({ title, content, doc_type: type }),
       signal: AbortSignal.timeout(5000),
     }).catch(() => {});
-    res.status(201).json({ success: true, id: info.lastInsertRowid });
+    res.status(201).json({ success: true, id: rows[0].id });
   } catch (err) {
     res.status(500).json({ error: 'Error guardando documento', detail: err.message });
   }
@@ -177,11 +154,11 @@ function _localDiet(goal, weekStart) {
       { name: 'Extra',     kcal: Math.round(kcal * 0.05), desc: 'Frutos secos (20 g)' },
     ],
     gain: [
-      { name: 'Desayuno',  kcal: Math.round(kcal * 0.25), desc: 'Tortilla 3 huevos + tostadas integrales + zumo natural' },
+      { name: 'Desayuno',     kcal: Math.round(kcal * 0.25), desc: 'Tortilla 3 huevos + tostadas integrales + zumo natural' },
       { name: 'Media mañana', kcal: Math.round(kcal * 0.10), desc: 'Batido proteico + plátano' },
-      { name: 'Almuerzo',  kcal: Math.round(kcal * 0.30), desc: 'Arroz integral (150 g) + pollo 200 g + verduras salteadas' },
-      { name: 'Merienda',  kcal: Math.round(kcal * 0.10), desc: 'Requesón + nueces + miel' },
-      { name: 'Cena',      kcal: Math.round(kcal * 0.25), desc: 'Pasta (120 g) + ternera magra + tomate natural' },
+      { name: 'Almuerzo',     kcal: Math.round(kcal * 0.30), desc: 'Arroz integral (150 g) + pollo 200 g + verduras salteadas' },
+      { name: 'Merienda',     kcal: Math.round(kcal * 0.10), desc: 'Requesón + nueces + miel' },
+      { name: 'Cena',         kcal: Math.round(kcal * 0.25), desc: 'Pasta (120 g) + ternera magra + tomate natural' },
     ],
     maintain: [
       { name: 'Desayuno',  kcal: Math.round(kcal * 0.22), desc: 'Tostadas integrales + aguacate + 2 huevos revueltos' },
@@ -193,13 +170,10 @@ function _localDiet(goal, weekStart) {
   };
 
   const meals = mealTemplates[goal] || mealTemplates.maintain;
-  const days   = ['Lunes','Martes','Miércoles','Jueves','Viernes','Sábado','Domingo'];
+  const days  = ['Lunes','Martes','Miércoles','Jueves','Viernes','Sábado','Domingo'];
 
   return {
-    source:    'local',
-    weekStart,
-    goal,
-    dailyCalorieTarget: kcal,
+    source: 'local', weekStart, goal, dailyCalorieTarget: kcal,
     days: days.map(day => ({
       day,
       totalCalories: kcal,

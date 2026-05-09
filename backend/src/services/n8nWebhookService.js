@@ -1,32 +1,19 @@
 'use strict';
 
-/**
- * n8nWebhookService — Dispatcher de eventos hacia el agente IA de n8n.
- *
- * Fire-and-forget: nunca bloquea la respuesta HTTP principal.
- * Si n8n no está configurado o está caído, el error se logea en silencio.
- */
-
+const pg           = require('../db/postgres');
 const N8N_WEBHOOK_URL = process.env.N8N_WEBHOOK_URL;
 const N8N_SECRET      = process.env.N8N_SECRET || '';
 
-/**
- * Emite un evento de fitness hacia n8n.
- *
- * @param {string} eventType  — 'workout.logged' | 'diet.logged' | 'progress.updated' | 'weekly.checkin'
- * @param {object} payload    — { accountId, user, data, context }
- */
 function emit(eventType, payload) {
-  if (!N8N_WEBHOOK_URL) return; // deshabilitado si no está configurado
+  if (!N8N_WEBHOOK_URL) return;
 
   const body = JSON.stringify({
     event:     eventType,
     timestamp: new Date().toISOString(),
-    source:    'fittracker-backend-v2',
+    source:    'fittracker-backend-v3',
     ...payload,
   });
 
-  // Dispatch asíncrono sin await — la respuesta HTTP ya salió
   fetch(N8N_WEBHOOK_URL, {
     method:  'POST',
     headers: {
@@ -43,29 +30,32 @@ function emit(eventType, payload) {
   });
 }
 
-/**
- * Construye el contexto de un usuario para enriquecer el payload del evento.
- * @param {object} db         — instancia de better-sqlite3
- * @param {number} accountId
- * @returns {object}
- */
-function buildUserContext(db, accountId) {
-  const profile = db.prepare('SELECT * FROM accounts WHERE id = ?').get(accountId);
+async function buildUserContext(accountId) {
+  const { rows: profileRows } = await pg.query(
+    'SELECT * FROM accounts WHERE id = $1', [accountId]
+  );
+  const profile = profileRows[0];
   if (!profile) return null;
 
-  const recentWorkouts = db.prepare(
-    "SELECT COUNT(*) as c FROM workout_logs WHERE account_id = ? AND date >= date('now','-7 days')"
-  ).get(accountId)?.c || 0;
+  const [workoutRes, dietRes, progressRes] = await Promise.all([
+    pg.query(
+      `SELECT COUNT(*) AS c FROM workout_logs
+       WHERE account_id = $1 AND date >= CURRENT_DATE - INTERVAL '7 days'`,
+      [accountId]
+    ),
+    pg.query(
+      `SELECT COUNT(*) AS c FROM diet_logs
+       WHERE account_id = $1 AND date >= CURRENT_DATE - INTERVAL '7 days'`,
+      [accountId]
+    ),
+    pg.query(
+      'SELECT weight, date FROM progress_logs WHERE account_id = $1 ORDER BY date DESC LIMIT 2',
+      [accountId]
+    ),
+  ]);
 
-  const recentDietLogs = db.prepare(
-    "SELECT COUNT(*) as c FROM diet_logs WHERE account_id = ? AND date >= date('now','-7 days')"
-  ).get(accountId)?.c || 0;
-
-  const lastProgress = db.prepare(
-    'SELECT weight, date FROM progress_logs WHERE account_id = ? ORDER BY date DESC LIMIT 2'
-  ).all(accountId);
-
-  const weightChange = lastProgress.length >= 2
+  const lastProgress  = progressRes.rows;
+  const weightChange  = lastProgress.length >= 2
     ? parseFloat((lastProgress[0].weight - lastProgress[1].weight).toFixed(1))
     : null;
 
@@ -81,11 +71,11 @@ function buildUserContext(db, accountId) {
       restrictions:  profile.restrictions,
     },
     context: {
-      recentWorkouts,
-      recentDietLogs,
-      weeklyTarget: 4,
+      recentWorkouts:  parseInt(workoutRes.rows[0].c, 10),
+      recentDietLogs:  parseInt(dietRes.rows[0].c, 10),
+      weeklyTarget:    4,
       weightChange,
-      lastWeightDate: lastProgress[0]?.date || null,
+      lastWeightDate:  lastProgress[0]?.date || null,
     },
   };
 }

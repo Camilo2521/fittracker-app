@@ -1,6 +1,6 @@
 /**
- * FitTracker Backend API
- * Express server entry point
+ * FitTracker Backend API — v3.0.0
+ * Base de datos: PostgreSQL (único motor)
  */
 
 require('dotenv').config();
@@ -10,9 +10,6 @@ const helmet   = require('helmet');
 const cors     = require('cors');
 const morgan   = require('morgan');
 const { runMigrations } = require('./db/migrate');
-
-// Aplicar migraciones pendientes al arrancar
-runMigrations();
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -38,12 +35,11 @@ const corsOptions = {
 
 app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
-
 app.use(express.json({ limit: '1mb' }));
 app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev'));
 
 // ── SWAGGER ───────────────────────────────────────────────────
-const swaggerUi   = require('swagger-ui-express');
+const swaggerUi    = require('swagger-ui-express');
 const swaggerJsdoc = require('swagger-jsdoc');
 
 const swaggerSpec = swaggerJsdoc({
@@ -51,7 +47,7 @@ const swaggerSpec = swaggerJsdoc({
     openapi: '3.0.0',
     info: {
       title:       'FitTracker API',
-      version:     '2.0.0',
+      version:     '3.0.0',
       description: 'API REST del backend de FitTracker — autenticación, IA, rutinas, dietas, progreso y más.',
     },
     servers: [{ url: 'http://localhost:3000', description: 'Local' }],
@@ -71,16 +67,12 @@ app.get('/docs.json', (_req, res) => res.json(swaggerSpec));
 // ── ROUTES ────────────────────────────────────────────────────
 app.use('/api/v1', require('./routes/v1'));
 
-// ── HEALTH CHECK UNIFICADO ────────────────────────────────────
+// ── HEALTH CHECK ──────────────────────────────────────────────
 app.get('/health', async (_req, res) => {
-  const sqliteDb = require('./db/connection');
-  const pg       = require('./db/postgres');
-  const { FLAGS } = require('./middleware/featureFlags');
+  const pg         = require('./db/postgres');
+  const { FLAGS }  = require('./middleware/featureFlags');
 
-  const checks = { node: 'ok', sqlite: 'unknown', postgres: 'unknown', python: 'unknown' };
-
-  try { sqliteDb.prepare('SELECT 1').get(); checks.sqlite = 'ok'; }
-  catch (e) { checks.sqlite = `error: ${e.message}`; }
+  const checks = { node: 'ok', postgres: 'unknown', python: 'unknown' };
 
   checks.postgres = await pg.healthCheck();
 
@@ -93,15 +85,11 @@ app.get('/health', async (_req, res) => {
     checks.python = data.status || 'ok';
   } catch { checks.python = 'unavailable'; }
 
-  // SQLite is the primary DB; postgres is optional. Return 200 as long as SQLite is up.
-  const sqliteOk = checks.sqlite === 'ok';
-  const pgOk     = ['ok', 'unavailable', 'no_config'].includes(checks.postgres)
-                   || checks.postgres?.startsWith('error:');
-  const allOk    = sqliteOk;
+  const pgOk = checks.postgres === 'ok';
 
-  res.status(allOk ? 200 : 503).json({
-    status:        (sqliteOk && pgOk) ? 'ok' : sqliteOk ? 'degraded' : 'error',
-    version:       '2.0.0',
+  res.status(pgOk ? 200 : 503).json({
+    status:        pgOk ? 'ok' : 'error',
+    version:       '3.0.0',
     timestamp:     new Date().toISOString(),
     checks,
     feature_flags: FLAGS,
@@ -110,26 +98,33 @@ app.get('/health', async (_req, res) => {
 
 // ── ERROR HANDLING ────────────────────────────────────────────
 app.use((err, _req, res, _next) => {
-  const status = err.status || 500;
+  const status  = err.status || 500;
   const message = err.expose || process.env.NODE_ENV !== 'production'
     ? err.message
     : 'Internal server error';
   res.status(status).json({ error: message });
 });
 
-// 404
-app.use((_req, res) => {
-  res.status(404).json({ error: 'Route not found' });
-});
+app.use((_req, res) => res.status(404).json({ error: 'Route not found' }));
 
 // ── START ─────────────────────────────────────────────────────
-app.listen(PORT, '0.0.0.0', () => {
-  const { FLAGS } = require('./middleware/featureFlags');
-  console.log(`✅ FitTracker API v2 running on http://localhost:${PORT}`);
-  console.log(`   Environment  : ${process.env.NODE_ENV || 'development'}`);
-  console.log(`   DB path      : ${process.env.DB_PATH || '../database/fittracker.db'}`);
-  console.log(`   Python svc   : ${process.env.PYTHON_SERVICE_URL || 'http://localhost:8000'}`);
-  console.log(`   Flags activos: ${Object.entries(FLAGS).filter(([,v])=>v).map(([k])=>k).join(', ') || 'ninguno'}`);
+async function start() {
+  await runMigrations();
+
+  app.listen(PORT, '0.0.0.0', () => {
+    const { FLAGS } = require('./middleware/featureFlags');
+    console.log(`✅ FitTracker API v3 running on http://localhost:${PORT}`);
+    console.log(`   Environment  : ${process.env.NODE_ENV || 'development'}`);
+    console.log(`   Database     : PostgreSQL (${process.env.DATABASE_URL?.replace(/:([^:@]+)@/, ':***@') || 'no config'})`);
+    console.log(`   Python svc   : ${process.env.PYTHON_SERVICE_URL || 'http://localhost:8000'}`);
+    console.log(`   Flags activos: ${Object.entries(FLAGS).filter(([,v])=>v).map(([k])=>k).join(', ') || 'ninguno'}`);
+    console.log(`   Swagger      : http://localhost:${PORT}/docs`);
+  });
+}
+
+start().catch(err => {
+  console.error('Error fatal al iniciar:', err);
+  process.exit(1);
 });
 
 module.exports = app;

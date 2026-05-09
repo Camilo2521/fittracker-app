@@ -49,4 +49,9 @@ async function healthCheck() {
   }
 }
 
-module.exports = { query, healthCheck, getPool };
+// pool getter — allows callers to do `pg.pool.connect()` for transactions
+Object.defineProperty(module.exports, 'pool', { get: getPool, enumerable: true });
+
+module.exports.query       = query;
+module.exports.healthCheck = healthCheck;
+module.exports.getPool     = getPool;

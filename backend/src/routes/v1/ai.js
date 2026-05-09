@@ -2,41 +2,39 @@
 
 const express = require('express');
 const router  = express.Router();
-const db      = require('../../db/connection');
+const pg      = require('../../db/postgres');
 const ollama  = require('../../services/ollamaService');
 
-// ── Persistent memory table ────────────────────────────────────────────────────
-db.exec(`
-  CREATE TABLE IF NOT EXISTS user_memories (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    account_id INTEGER NOT NULL,
-    key        TEXT    NOT NULL,
-    value      TEXT    NOT NULL,
-    updated_at TEXT    NOT NULL DEFAULT (datetime('now')),
-    UNIQUE(account_id, key)
-  );
-  CREATE INDEX IF NOT EXISTS idx_user_mem ON user_memories(account_id);
-`);
+// ── Memory helpers (PostgreSQL) ────────────────────────────────────────────────
 
-const _upsertMem = db.prepare(`
-  INSERT INTO user_memories (account_id, key, value)
-  VALUES (?, ?, ?)
-  ON CONFLICT(account_id, key) DO UPDATE SET value=excluded.value, updated_at=datetime('now')
-`);
-
-function _loadMemories(accountId) {
+async function _loadMemories(accountId) {
   if (!accountId) return [];
-  return db.prepare('SELECT key, value FROM user_memories WHERE account_id = ? ORDER BY updated_at DESC').all(accountId);
+  const { rows } = await pg.query(
+    'SELECT key, value FROM user_memories WHERE account_id = $1 ORDER BY updated_at DESC',
+    [accountId]
+  );
+  return rows;
 }
 
-function _saveMemories(accountId, pairs) {
+async function _saveMemories(accountId, pairs) {
   if (!accountId || !pairs.length) return;
-  const tx = db.transaction(() => {
+  const client = await pg.pool.connect();
+  try {
+    await client.query('BEGIN');
     for (const { key, value } of pairs) {
-      try { _upsertMem.run(accountId, key, String(value)); } catch {}
+      await client.query(
+        `INSERT INTO user_memories (account_id, key, value)
+         VALUES ($1,$2,$3)
+         ON CONFLICT (account_id, key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
+        [accountId, key, String(value)]
+      );
     }
-  });
-  tx();
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+  } finally {
+    client.release();
+  }
 }
 
 // Auto-extract facts from the user's message
@@ -44,43 +42,35 @@ function _extractMemories(msg) {
   const m   = msg.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
   const out = [];
 
-  // Injuries
   const injM = m.match(/(?:lesion(?:ado|ada)?|duele|dolor)\s+(?:en|de)\s+(?:la\s|el\s|mi\s)?(\w+)/);
   if (injM) out.push({ key: 'lesion', value: injM[1] });
 
-  // Diet
   if (/vegetariano|vegetariana/.test(m)) out.push({ key: 'dieta', value: 'vegetariano/a' });
   if (/\bvegano|vegana\b/.test(m))       out.push({ key: 'dieta', value: 'vegano/a' });
   if (/intolerante.*lactosa|sin lactosa/.test(m)) out.push({ key: 'intolerancia', value: 'lactosa' });
   if (/sin gluten|celiaco|celiaca/.test(m))       out.push({ key: 'intolerancia', value: 'gluten' });
   if (/sin mariscos|alergico.*mariscos/.test(m))  out.push({ key: 'alergia', value: 'mariscos' });
 
-  // Training schedule
   if (/entreno.*ma[n]ana|ma[n]ana.*entreno|por las ma[n]anas/.test(m)) out.push({ key: 'horario_entreno', value: 'mañana' });
   if (/entreno.*tarde|tarde.*entreno|por las tardes/.test(m))          out.push({ key: 'horario_entreno', value: 'tarde' });
   if (/entreno.*noche|noche.*entreno|por las noches/.test(m))          out.push({ key: 'horario_entreno', value: 'noche' });
 
-  // Equipment
   if (/sin equipo|en casa sin|sin pesas|peso corporal solo/.test(m))  out.push({ key: 'equipamiento', value: 'ninguno (peso corporal)' });
   if (/tengo.*gym|voy al gym|tengo pesas|tengo barra|gym en casa/.test(m)) out.push({ key: 'equipamiento', value: 'gym completo' });
   if (/solo.*mancuernas|tengo mancuernas/.test(m)) out.push({ key: 'equipamiento', value: 'mancuernas' });
   if (/tengo.*banda|banda.*elastica/.test(m))       out.push({ key: 'equipamiento', value: 'bandas elásticas' });
 
-  // Training preferences
   if (/poco tiempo|entrenos cortos|rapido/.test(m)) out.push({ key: 'pref_duracion', value: 'entrenos cortos' });
   if (/mucho tiempo|larga duracion|mas de una hora/.test(m)) out.push({ key: 'pref_duracion', value: 'entrenos largos' });
 
-  // Dislikes
   const dislikeM = m.match(/(?:odio|detesto|no me gusta(?:n)?)\s+(?:hacer\s+|los?\s+|las?\s+)?(\w+)/);
   if (dislikeM) out.push({ key: `no_gusta_${dislikeM[1]}`, value: 'true' });
 
-  // Goals numeric
   const loseM = m.match(/(?:perder|bajar)\s+(\d+)\s*kg/);
   if (loseM) out.push({ key: 'meta_kg_perder', value: loseM[1] + ' kg' });
   const gainM = m.match(/(?:ganar|subir)\s+(\d+)\s*kg/);
   if (gainM) out.push({ key: 'meta_kg_ganar', value: gainM[1] + ' kg' });
 
-  // Remember command
   if (/rec[uú]erdalo|guarda eso|anota esto/.test(m)) out.push({ key: 'solicita_memoria', value: msg.slice(0, 120) });
 
   return out;
@@ -101,7 +91,6 @@ function _buildSystemPrompt(p = {}, memories = []) {
     very_active: 'atleta / entrenamiento intenso diario',
   };
 
-  // Calcular métricas si hay datos suficientes
   const w = p.weight, h = p.height, a = p.age;
   let metricsBlock = '';
   if (w && h && a) {
@@ -114,12 +103,9 @@ function _buildSystemPrompt(p = {}, memories = []) {
     const target = p.goal === 'lose' ? tdee - 400 : p.goal === 'gain' ? tdee + 300 : tdee;
     const bmi    = parseFloat((w / ((h / 100) ** 2)).toFixed(1));
     const prot   = Math.round(w * (p.goal === 'gain' ? 2.0 : 1.7));
-    metricsBlock = `\nMÉTRICAS CALCULADAS:
-- TMB: ${tmb} kcal/día | TDEE: ${tdee} kcal/día | Meta calórica: ${target} kcal/día
-- IMC: ${bmi} | Proteína objetivo: ${prot} g/día`;
+    metricsBlock = `\nMÉTRICAS CALCULADAS:\n- TMB: ${tmb} kcal/día | TDEE: ${tdee} kcal/día | Meta calórica: ${target} kcal/día\n- IMC: ${bmi} | Proteína objetivo: ${prot} g/día`;
   }
 
-  // Bloque de perfil
   const profileLines = [
     `Nombre: ${p.name || 'no indicado'}`,
     `Objetivo: ${goalLabel[p.goal] || 'mejorar condición física'}`,
@@ -131,7 +117,6 @@ function _buildSystemPrompt(p = {}, memories = []) {
     p.restrictions ? `Restricciones/alergias: ${p.restrictions}` : null,
   ].filter(Boolean).map(l => `- ${l}`).join('\n');
 
-  // Memorias guardadas del usuario
   const memBlock = memories.length
     ? `\nDATOS RECORDADOS DE CONVERSACIONES ANTERIORES:\n${memories.map(m => `- ${m.key}: ${m.value}`).join('\n')}`
     : '';
@@ -164,7 +149,7 @@ REGLAS DE COMPORTAMIENTO:
 11. No saludes en cada mensaje — solo en el primero o cuando sea natural`;
 }
 
-// ── Local AI fallback (sin modelo externo) ─────────────────────────────────────
+// ── Local AI fallback ──────────────────────────────────────────────────────────
 const _INTENTS = {
   greet:      /^(hola|buenos|buenas|hey|hi|saludos|qu[eé] tal|como est|ola)/i,
   routine:    /rutina|entrenamiento|ejercicio|workout|gym|gimn|plan de tren|entrena|semana de ejerc/i,
@@ -293,22 +278,18 @@ function _localAI(userMsg, p, history) {
   const goalTxt = { lose: 'perder peso', gain: 'ganar músculo', maintain: 'mantener tu peso' }[goal];
   const prev   = history.length > 2;
 
-  // Detect name introduction
   const nameMatch = msg.match(/(?:me llamo|mi nombre es|soy)\s+([a-záéíóúñ]+)/i);
   if (nameMatch) {
     const detectedName = nameMatch[1].charAt(0).toUpperCase() + nameMatch[1].slice(1);
     return `¡Encantado, **${detectedName}**! 👋 Soy FitBot, tu coach personal de fitness. Estoy aquí para ayudarte con:\n\n- 🏋️ **Rutinas** de entrenamiento personalizadas\n- 🥗 **Planes de dieta** semanales\n- 🔢 **Calorías**, IMC y métricas\n- 💪 **Motivación** y consejos\n\n¿Qué necesitas hoy, ${detectedName}?`;
   }
 
-  // General wellbeing / life improvement questions
   if (/mejorar.*vida|vida.*mejor|bienestar|salud.*general|mejor.*persona|cambiar.*vida|empezar.*fit|estilo.*vida|habitos/i.test(msg)) {
     const { tdee } = _calcMetrics(p);
     return `Mejorar tu vida con el fitness es una decisión que transforma todo, ${name}. Por dónde empezar:\n\n1. 🏋️ **Muévete 30 min/día** — no tiene que ser intenso, caminar cuenta\n2. 🥗 **Come real** — reduce ultraprocesados, añade proteína en cada comida\n3. 😴 **Duerme 7-8 h** — sin sueño, nada funciona bien\n4. 💧 **Hidratación** — ${p.weight ? Math.round(p.weight * 0.033 * 10) / 10 : 2.5} L de agua al día\n5. 📈 **Consistencia > intensidad** — 3 días/semana durante 3 meses > 7 días durante 2 semanas\n\n¿Te genero una **rutina** o un **plan de dieta** personalizado para empezar?`;
   }
 
-  if (intent === 'greet') {
-    return `¡Hola${p.name ? `, **${p.name}**` : ''}! Soy FitBot, tu coach personal. 💪\n\nTu objetivo es **${goalTxt}**. Dime qué necesitas:\n- 🏋️ **Rutina** de entrenamiento\n- 🥗 **Plan de dieta** semanal\n- 🔢 **Calorías** y métricas\n- 💬 Cualquier duda de fitness\n\n¿Por dónde empezamos?`;
-  }
+  if (intent === 'greet')     return `¡Hola${p.name ? `, **${p.name}**` : ''}! Soy FitBot, tu coach personal. 💪\n\nTu objetivo es **${goalTxt}**. Dime qué necesitas:\n- 🏋️ **Rutina** de entrenamiento\n- 🥗 **Plan de dieta** semanal\n- 🔢 **Calorías** y métricas\n- 💬 Cualquier duda de fitness\n\n¿Por dónde empezamos?`;
   if (intent === 'routine' || intent === 'cardio') {
     const plan = _buildRoutine(goal);
     return `¡Aquí tu rutina para **${goalTxt}**, ${name}! 💪\n\n<<<ROUTINE_PLAN\n${JSON.stringify(plan)}\nROUTINE_PLAN>>>\n\n¿Quieres ajustar algo?`;
@@ -325,17 +306,16 @@ function _localAI(userMsg, p, history) {
     const kg = p.weight || 70;
     return `💊 **Proteína**: ${Math.round(kg * 1.6)}–${Math.round(kg * 2.2)} g/día.\n\nFuentes: pollo (31 g/100 g), huevos (6 g/ud), atún (26 g/100 g), yogur griego (10 g/100 g).\n\n**Suplementos útiles**: creatina 3-5 g/día, omega-3 1-2 g/día, vitamina D3 en invierno.`;
   }
-  if (intent === 'sleep')   return `😴 **El sueño es tu suplemento más potente**, ${name}. 7-9 h de sueño libera el 80% de la hormona del crecimiento diaria. Sin pantallas 1 h antes de dormir. Temperatura 17-19°C. Sin esto, los entrenamientos rinden un 30% menos.`;
+  if (intent === 'sleep')      return `😴 **El sueño es tu suplemento más potente**, ${name}. 7-9 h de sueño libera el 80% de la hormona del crecimiento diaria. Sin pantallas 1 h antes de dormir. Temperatura 17-19°C. Sin esto, los entrenamientos rinden un 30% menos.`;
   if (intent === 'hydration') {
     const L = p.weight ? Math.round(p.weight * 0.033 * 10) / 10 : 2.5;
     return `💧 Tu peso sugiere **${L} L/día**. Añade 500 ml por hora de ejercicio intenso. Orina amarillo pálido = buena hidratación.`;
   }
-  if (intent === 'injury') return `⚠️ Siento las molestias, ${name}. Sin ser médico: RICE (Reposo, Hielo, Compresión, Elevación) las primeras 48-72 h. Si el dolor es agudo, persiste en reposo o hay hinchazón notable → médico. Puedo ajustarte la rutina para no cargar la zona afectada. ¿Qué zona es?`;
+  if (intent === 'injury')     return `⚠️ Siento las molestias, ${name}. Sin ser médico: RICE (Reposo, Hielo, Compresión, Elevación) las primeras 48-72 h. Si el dolor es agudo, persiste en reposo o hay hinchazón notable → médico. Puedo ajustarte la rutina para no cargar la zona afectada. ¿Qué zona es?`;
   if (intent === 'motivation') return `${name}, los hábitos vencen a la motivación. La motivación va y viene — los resultados se construyen cuando actúas aunque no tengas ganas. ¿Qué es lo más pequeño que puedes hacer HOY por **${goalTxt}**? Empieza ahí. 🔥`;
-  if (intent === 'progress') return `📈 Más allá de la báscula: mide perímetros cada 2 semanas, fotos cada 4, y sobre todo rendimiento (más reps, más peso). El peso fluctúa 1-3 kg por agua. Pésate 1 vez/semana, en ayunas, mismo día.`;
-  if (intent === 'adjust') return `Claro, ${name}. ¿Qué ajustamos?\n- 🏋️ **Rutina**: días, ejercicios, intensidad\n- 🥗 **Dieta**: comidas, horarios, ingredientes\n- 📊 **Calorías**: objetivo\n\nCuéntame y lo regenero.`;
+  if (intent === 'progress')   return `📈 Más allá de la báscula: mide perímetros cada 2 semanas, fotos cada 4, y sobre todo rendimiento (más reps, más peso). El peso fluctúa 1-3 kg por agua. Pésate 1 vez/semana, en ayunas, mismo día.`;
+  if (intent === 'adjust')     return `Claro, ${name}. ¿Qué ajustamos?\n- 🏋️ **Rutina**: días, ejercicios, intensidad\n- 🥗 **Dieta**: comidas, horarios, ingredientes\n- 📊 **Calorías**: objetivo\n\nCuéntame y lo regenero.`;
 
-  // Conversational general fallback — tries to give a useful response
   const lastBot = history.filter(m => m.role === 'assistant').slice(-1)[0]?.content || '';
   if (prev && lastBot) {
     return `Entiendo, ${name}. Para ayudarte mejor con eso, cuéntame más o prueba con algo concreto:\n\n- 🏋️ "**Genera mi rutina**" — plan de entrenamiento personalizado\n- 🥗 "**Mi plan de dieta**" — menú semanal con calorías\n- 🔢 "**Mis calorías**" — TDEE, IMC y métricas\n- 💪 "**Necesito motivación**"\n- 😴 "**Consejos para dormir mejor**"\n\n¿Qué te interesa más?`;
@@ -385,24 +365,10 @@ router.post('/body-scan', async (req, res) => {
  *                     content: { type: string }
  *               userProfile:
  *                 type: object
- *                 properties:
- *                   id:     { type: integer }
- *                   name:   { type: string }
- *                   goal:   { type: string }
- *                   weight: { type: number }
  *     responses:
  *       200:
  *         description: Respuesta del asistente
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 content: { type: string }
- *                 source:  { type: string, enum: [ollama, local] }
- *                 model:   { type: string }
  */
-// ── POST /api/v1/ai/chat ───────────────────────────────────────────────────────
 router.post('/chat', async (req, res) => {
   const { messages = [], userProfile = {} } = req.body;
   if (!Array.isArray(messages) || !messages.length) {
@@ -412,15 +378,13 @@ router.post('/chat', async (req, res) => {
   const accountId = userProfile.id || req.body.accountId || null;
   const lastMsg   = messages[messages.length - 1]?.content || '';
 
-  // Auto-learn from this message
   const newMems = _extractMemories(lastMsg);
-  if (newMems.length) _saveMemories(accountId, newMems);
+  if (newMems.length) await _saveMemories(accountId, newMems);
 
-  const memories    = _loadMemories(accountId);
+  const memories     = await _loadMemories(accountId);
   const systemPrompt = _buildSystemPrompt(userProfile, memories);
   const history      = messages.slice(-24).map(m => ({ role: m.role, content: m.content }));
 
-  // 1. Ollama (local AI)
   if (await ollama.isAvailable()) {
     try {
       const reply = await ollama.chat(history, systemPrompt);
@@ -430,7 +394,6 @@ router.post('/chat', async (req, res) => {
     }
   }
 
-  // 2. Offline fallback
   res.json({ content: _localAI(lastMsg, userProfile, messages), source: 'local' });
 });
 
@@ -453,13 +416,12 @@ router.post('/chat/stream', async (req, res) => {
   const lastMsg     = messages[messages.length - 1]?.content || '';
 
   const newMems = _extractMemories(lastMsg);
-  if (newMems.length) _saveMemories(accountId, newMems);
+  if (newMems.length) await _saveMemories(accountId, newMems);
 
-  const memories     = _loadMemories(accountId);
+  const memories     = await _loadMemories(accountId);
   const systemPrompt = _buildSystemPrompt(userProfile, memories);
   const history      = messages.slice(-24).map(m => ({ role: m.role, content: m.content }));
 
-  // 1. Ollama streaming
   if (await ollama.isAvailable()) {
     try {
       for await (const chunk of ollama.chatStream(history, systemPrompt)) {
@@ -472,7 +434,6 @@ router.post('/chat/stream', async (req, res) => {
     }
   }
 
-  // 2. Local fallback — word-by-word streaming simulation
   const reply = _localAI(lastMsg, userProfile, messages);
   for (const w of reply.split(/(?<=\s)/)) {
     send({ t: w });
@@ -492,17 +453,7 @@ router.post('/chat/stream', async (req, res) => {
  *     responses:
  *       200:
  *         description: Estado de Ollama y modelos disponibles
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 ollama:            { type: boolean }
- *                 ollama_model:      { type: string }
- *                 models_available:  { type: array, items: { type: string } }
- *                 active_mode:       { type: string, enum: [ollama, local] }
  */
-// ── GET  /api/v1/ai/status ────────────────────────────────────────────────────
 router.get('/status', async (_req, res) => {
   const ollamaOk = await ollama.isAvailable();
   const models   = ollamaOk ? await ollama.listModels() : [];
@@ -514,17 +465,17 @@ router.get('/status', async (_req, res) => {
   });
 });
 
-// ── GET  /api/v1/ai/memory ─────────────────────────────────────────────────────
-router.get('/memory', (req, res) => {
+// ── GET /api/v1/ai/memory ──────────────────────────────────────────────────────
+router.get('/memory', async (req, res) => {
   const accountId = req.query.accountId ? parseInt(req.query.accountId) : null;
-  res.json(_loadMemories(accountId));
+  res.json(await _loadMemories(accountId));
 });
 
 // ── DELETE /api/v1/ai/memory/:key ─────────────────────────────────────────────
-router.delete('/memory/:key', (req, res) => {
+router.delete('/memory/:key', async (req, res) => {
   const accountId = req.query.accountId ? parseInt(req.query.accountId) : null;
   if (!accountId) return res.status(400).json({ error: 'accountId requerido' });
-  db.prepare('DELETE FROM user_memories WHERE account_id = ? AND key = ?').run(accountId, req.params.key);
+  await pg.query('DELETE FROM user_memories WHERE account_id = $1 AND key = $2', [accountId, req.params.key]);
   res.json({ deleted: req.params.key });
 });
 
